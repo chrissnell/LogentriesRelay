@@ -167,11 +167,17 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 }
 
 func DialLogEntries() (err error, conn net.Conn) {
-	conn, err = net.Dial("tcp", *logconsumerPtr)
-	if err != nil {
-		fmt.Println("Could not connect to LogEntries log endpoint ", err.Error())
+	for {
+		conn, err = net.Dial("tcp", *logconsumerPtr)
+		if err == nil {
+			return err, conn
+		} else {
+			fmt.Println("Could not connect to LogEntries log endpoint...retrying")
+			// Wait for 5 seconds before redialing
+			timer := time.NewTimer(time.Second * 5)
+			<-timer.C
+		}
 	}
-	return err, conn
 }
 
 func SendLogMessages(msg chan LogLine) {
