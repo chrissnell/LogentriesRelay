@@ -68,12 +68,14 @@ type LogLine struct {
 }
 
 var (
-	logconsumerPtr      *string
-	logentriesAPIKeyPtr *string
-	listenAddrPtr       *string
-	logentities         = make(map[string]LogentriesLogEntity)
-	hostentities        = make(map[string]LogentriesHostEntity)
-	tokenchan           = make(chan string)
+	logconsumerPtr        *string
+	logentriesAPIKeyPtr   *string
+	listenAddrPtr         *string
+	logentities           = make(map[string]LogentriesLogEntity)
+	hostentities          = make(map[string]LogentriesHostEntity)
+	tokenchan             = make(chan string)
+	logentities_filename  = "logentries-logentities.gob"
+	hostentities_filename = "logentries-hostentities.gob"
 )
 
 // Simple fiter for named/bind messages which can be used with BaseHandler
@@ -128,6 +130,48 @@ func ProcessLogMessage(msg chan syslog.Message) {
 	}
 }
 
+func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }) {
+	select {
+	case lht, msg_ok := <-lh:
+		if !msg_ok {
+			fmt.Println("msg channel closed")
+		} else {
+
+			var hostentity LogentriesHostEntity
+			var logentity LogentriesLogEntity
+
+			l := strings.Join([]string{lht.host, lht.log}, "::")
+
+			hostentity = hostentities[lht.host]
+			if hostentity.Host.Key == "" {
+				hostentity = RegisterNewHost(lht.host)
+
+				// Store our new host token in our map and sync it to disk
+				hostentities[lht.host] = hostentity
+				err := SyncHostEntitiesToDisk()
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+
+			logentity = logentities[l]
+			if logentity.Log.Token == "" {
+				logentity := RegisterNewLog(hostentity, l)
+				logentities[l] = logentity
+				tokenchan <- logentity.Log.Token
+				tokenfetchdone <- true
+				err := SyncLogEntitiesToDisk()
+				if err != nil {
+					log.Fatal(err)
+				}
+			} else {
+				tokenchan <- logentity.Log.Token
+				tokenfetchdone <- true
+			}
+		}
+	}
+}
+
 func DialLogEntries() (err error, conn net.Conn) {
 	conn, err = net.Dial("tcp", *logconsumerPtr)
 	if err != nil {
@@ -155,42 +199,6 @@ func SendLogMessages(msg chan LogLine) {
 				break
 			}
 			// fmt.Printf("Sending line: %v", line)
-		}
-	}
-}
-
-func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }) {
-	for lht := range lh {
-		var hostentity LogentriesHostEntity
-		var logentity LogentriesLogEntity
-
-		l := strings.Join([]string{lht.host, lht.log}, "::")
-
-		hostentity = hostentities[lht.host]
-		if hostentity.Host.Key == "" {
-			hostentity = RegisterNewHost(lht.host)
-
-			// Store our new host token in our map and sync it to disk
-			hostentities[lht.host] = hostentity
-			err := SyncHostEntitiesToDisk()
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		logentity = logentities[l]
-		if logentity.Log.Token == "" {
-			logentity := RegisterNewLog(hostentity, l)
-			logentities[l] = logentity
-			tokenchan <- logentity.Log.Token
-			tokenfetchdone <- true
-			err := SyncLogEntitiesToDisk()
-			if err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			tokenchan <- logentity.Log.Token
-			tokenfetchdone <- true
 		}
 	}
 }
@@ -280,9 +288,6 @@ func main() {
 	if *logentriesAPIKeyPtr == "" {
 		log.Fatal("Must pass a Logentries API key. Use -h for help.")
 	}
-
-	logentities_filename := "logentries-logentities.gob"
-	hostentities_filename := "logentries-hostentities.gob"
 
 	if _, err := os.Stat(logentities_filename); err == nil {
 		err = LoadLogEntitiesFromDisk()
