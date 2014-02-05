@@ -11,6 +11,8 @@ On your syslog relay server
 $ ./LogentriesRelay -apikey="your_api_key" [-consumer="host:port"] [-listen="host:port"]
 
 -apikey="KEY"    Logentries API key
--consumer="host:port" Logentries log consumer endpoint <host:port> (Default: api.logentries.com:10000)
--listen="host:port"   Host/port to listen for syslog messages <host:port> (Default: 0.0.0.0:1987)
+-consumer="host:port" Logentries log consumer endpoint <host:port> 
+                      (Default: api.logentries.com:10000)
+-listen="host:port"   Host/port to listen for syslog messages <host:port>
+                      (Default: 0.0.0.0:1987)
 ```
