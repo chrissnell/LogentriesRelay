@@ -31,3 +31,7 @@ $ ./LogentriesRelay -apikey="your_api_key" [-consumer="host:port"] [-listen="hos
 -listen="host:port"   Host/port to listen for syslog messages <host:port>
                       (Default: 0.0.0.0:1987)
 ```
+
+Logentries Token Persistence
+----------------------------
+LogentriesRelay talks to the Logentries API to obtain tokens for your hosts and logs.  To make these persistent after LogentriesRelay is shut down, they are stored in two ".gob" (Go Object) files that are created in the directory from which you run LogentriesRelay.   Please make sure to run LogentriesRelay from a directory where it has write and read permission.  A future revision will allow for a configurable directory to store the gob files.
