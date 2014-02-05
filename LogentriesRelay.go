@@ -78,11 +78,6 @@ var (
 	hostentities_filename = "logentries-hostentities.gob"
 )
 
-// Simple fiter for named/bind messages which can be used with BaseHandler
-func filter(m *syslog.Message) bool {
-	return m.Tag == "named" || m.Tag == "bind"
-}
-
 func newHandler() *handler {
 	msg := make(chan syslog.Message)
 	// Filter function name set to nil to disable filtering
@@ -92,7 +87,6 @@ func newHandler() *handler {
 	return &h
 }
 
-// mainLoop reads from BaseHandler queue using h.Get and logs messages to stdout
 func (h *handler) mainLoop(msg chan syslog.Message) {
 	for {
 		m := h.Get()
