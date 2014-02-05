@@ -1,7 +1,6 @@
 package main
 
 import (
-	"./syslog-chrissnell"
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/chrissnell/syslog"
 )
 
 type handler struct {
@@ -73,7 +74,6 @@ var (
 	logentities         = make(map[string]LogentriesLogEntity)
 	hostentities        = make(map[string]LogentriesHostEntity)
 	tokenchan           = make(chan string)
-	lh                  = make(chan struct{ host, log string })
 )
 
 // Simple fiter for named/bind messages which can be used with BaseHandler
@@ -106,13 +106,15 @@ func (h *handler) mainLoop(msg chan syslog.Message) {
 func ProcessLogMessage(msg chan syslog.Message) {
 	tokenfetchdone := make(chan bool, 1)
 	logentrieschan := make(chan LogLine)
+	lh := make(chan struct{ host, log string })
+
 	var logline LogLine
 
 	for m := range msg {
 		if m.Hostname == "" {
 			m.Hostname = "NONE"
 		}
-		go GetTokenForLog(tokenfetchdone)
+		go GetTokenForLog(tokenfetchdone, lh)
 		lh <- struct{ host, log string }{m.Hostname, m.Tag}
 		token := <-tokenchan
 		<-tokenfetchdone
@@ -157,7 +159,7 @@ func SendLogMessages(msg chan LogLine) {
 	}
 }
 
-func GetTokenForLog(tokenfetchdone chan bool) {
+func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }) {
 	for lht := range lh {
 		var hostentity LogentriesHostEntity
 		var logentity LogentriesLogEntity
