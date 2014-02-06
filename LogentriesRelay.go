@@ -166,11 +166,11 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 	}
 }
 
-func DialLogEntries() (err error, conn net.Conn) {
+func DialLogEntries() (conn net.Conn, err error) {
 	for {
 		conn, err = net.Dial("tcp", *logconsumerPtr)
 		if err == nil {
-			return err, conn
+			return conn, err
 		} else {
 			fmt.Println("Could not connect to LogEntries log endpoint...retrying")
 			// Wait for 5 seconds before redialing
@@ -181,7 +181,7 @@ func DialLogEntries() (err error, conn net.Conn) {
 }
 
 func SendLogMessages(msg chan LogLine) {
-	err, conn := DialLogEntries()
+	conn, err := DialLogEntries()
 	if err != nil {
 		fmt.Println("Could not connect to LogEntries log endpoint ", err.Error())
 	}
