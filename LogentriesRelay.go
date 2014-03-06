@@ -150,7 +150,7 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 
 			logentity = logentities[l]
 			if logentity.Log.Token == "" {
-				logentity := RegisterNewLog(hostentity, l)
+				logentity := RegisterNewLog(hostentity, lht.log)
 				logentities[l] = logentity
 				tokenchan <- logentity.Log.Token
 				tokenfetchdone <- true
@@ -174,8 +174,7 @@ func DialLogEntries() (conn net.Conn, err error) {
 		} else {
 			fmt.Println("Could not connect to LogEntries log endpoint...retrying")
 			// Wait for 5 seconds before redialing
-			timer := time.NewTimer(time.Second * 5)
-			<-timer.C
+			time.Sleep(5000 * time.Millisecond)
 		}
 	}
 }
