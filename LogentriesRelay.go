@@ -79,7 +79,7 @@ var (
 )
 
 func newHandler() *handler {
-	msg := make(chan syslog.Message)
+	msg := make(chan syslog.Message, 100)
 	// Filter function name set to nil to disable filtering
 	h := handler{syslog.NewBaseHandler(5, nil, false)}
 	go h.mainLoop(msg)
@@ -101,8 +101,8 @@ func (h *handler) mainLoop(msg chan syslog.Message) {
 
 func ProcessLogMessage(msg chan syslog.Message) {
 	tokenfetchdone := make(chan bool, 1)
-	logentrieschan := make(chan LogLine)
-	lh := make(chan struct{ host, log string })
+	logentrieschan := make(chan LogLine, 100)
+	lh := make(chan struct{ host, log string }, 100)
 
 	var logline LogLine
 
@@ -110,6 +110,12 @@ func ProcessLogMessage(msg chan syslog.Message) {
 		if m.Hostname == "" {
 			m.Hostname = "NONE"
 		}
+
+		// for debugging
+		// if m.Hostname == "testpiper001" {
+		//	log.Printf("recv from %v: %v\n", m.Hostname, m.Content)
+		// }
+
 		go GetTokenForLog(tokenfetchdone, lh)
 		lh <- struct{ host, log string }{m.Hostname, m.Tag}
 		token := <-tokenchan
@@ -138,6 +144,7 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 
 			hostentity = hostentities[lht.host]
 			if hostentity.Host.Key == "" {
+				log.Printf("Registering host entity: %v\n", lht.host)
 				hostentity = RegisterNewHost(lht.host)
 
 				// Store our new host token in our map and sync it to disk
@@ -150,6 +157,7 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 
 			logentity = logentities[l]
 			if logentity.Log.Token == "" {
+				log.Printf("Registering new log entity [%v]: %v\n", lht.host, lht.log)
 				logentity := RegisterNewLog(hostentity, lht.log)
 				logentities[l] = logentity
 				tokenchan <- logentity.Log.Token
@@ -190,6 +198,10 @@ func SendLogMessages(msg chan LogLine) {
 		if !msg_ok {
 			fmt.Println("msg channel closed")
 		} else {
+			// For debugging...
+			// if logline.Line.Hostname == "testpiper001" {
+			//	log.Printf("send to LE from %v: %v\n", logline.Line.Hostname, logline.Line.Content)
+			// }
 			t := logline.Line.Time
 			line := fmt.Sprintf("%v %v %v %v\n", logline.Token, t.Format(time.RFC3339), logline.Line.Hostname, logline.Line.Content)
 			_, err = conn.Write([]byte(line))
