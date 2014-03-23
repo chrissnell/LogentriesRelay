@@ -25,7 +25,7 @@ On your syslog relay server
 ```
 $ ./LogentriesRelay -apikey="your_api_key" [-consumer="host:port"] [-listen="host:port"]
 
--apikey="KEY"              Logentries API key
+-apikey="KEY"              Logentries API key (AKA "account key" from Account -> Profile)
 
 -consumer="host:port"      Logentries log consumer endpoint <host:port> 
                            (Default: api.logentries.com:10000)
