@@ -23,15 +23,36 @@ On your syslog relay server
 ```
 $ ./LogentriesRelay -apikey="your_api_key" [-consumer="host:port"] [-listen="host:port"]
 
--apikey="KEY"         Logentries API key
+-apikey="KEY"              Logentries API key
 
--consumer="host:port" Logentries log consumer endpoint <host:port> 
-                      (Default: api.logentries.com:10000)
+-consumer="host:port"      Logentries log consumer endpoint <host:port> 
+                           (Default: api.logentries.com:10000)
                       
--listen="host:port"   Host/port to listen for syslog messages <host:port>
-                      (Default: 0.0.0.0:1987)
+-listen="host:port"        Host/port to listen for syslog messages <host:port>
+                           (Default: 0.0.0.0:1987)
+                      
+-cachelisten="host:port"   Host/port to listen for groupcache requests  <host:port> (Default: 0.0.0.0:11000)
+
+-peers=""                  Groupcache peers (for multi-server mode) <host:port[,host:port...]> (Default: none)
+
+-dbhost="host:port"        MySQL database server address <host:port>
+  
+-dbname="name"             MySQL database name (Default: lerelay)
+
+-dbuser="username"         MySQL username (Default: lerelay)
+
+-dbpass="pass"             MySQL password
+
 ```
 
 Logentries Token Persistence
 ----------------------------
-LogentriesRelay talks to the Logentries API to obtain tokens for your hosts and logs.  To make these persistent after LogentriesRelay is shut down, they are stored in two ".gob" (Go Object) files that are created in the directory from which you run LogentriesRelay.   Please make sure to run LogentriesRelay from a directory where it has write and read permission.  A future revision will allow for a configurable directory to store the gob files.
+LogentriesRelay talks to the Logentries API to obtain tokens for your hosts and logs.  To make these persistent after LogentriesRelay is shut down, they are stored in a MySQL database of your choosing.  Simply create a MySQL user and database and give that user CREATE, INSERT, UPDATE, and DELETE privileges and LogEntries will do the rest, including creating its own schema.
+
+The database is fronted with [groupcache](https://github.com/golang/groupcache/), a distributed caching and cache-filling library.
+
+Multi-Server Mode
+-----------------
+LogentriesRelay supports multi-server operation.  Simply run LogentriesRelay on multiple servers and point them to the same database server and use a load balancer (harware, HAproxy, etc.) to balance incoming syslog messages across the listening ports on each LogentriesRelay.   
+
+For multi-server operation, it is recommended that you pass the ```-peers``` option to share groupcache caching between the servers to speed up operation.   See command line options description above or run ```LogentriesRelay -h``` for more details.
