@@ -194,7 +194,7 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 				log.Printf("Registering new log entity [%v]: %v\n", lht.host, lht.log)
 				log_token := RegisterNewLog(host_token, lht.log)
 
-				log.Printf("Saving log token to db.  logname: %v  log_token: %v\n", lht.log, log_token)
+				log.Printf("Saving log token to db.  host_id: %v   logname: %v  log_token: %v\n", host_id, lht.log, log_token)
 				SaveLogTokenToDB(host_id, lht.log, log_token)
 
 				tokenchan <- log_token
@@ -209,7 +209,7 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 
 func GetHostTokenFromDB(h string) (token string) {
 
-	log.Printf("Checking DB for host: %v\n", h)
+	log.Printf("Querying DB for host_token for hostname [%v]\n", h)
 
 	err := db.Ping()
 	if err != nil {
@@ -228,7 +228,7 @@ func GetHostTokenFromDB(h string) (token string) {
 
 func GetHostIDFromDB(h string) (host_id string) {
 
-	log.Printf("Checking DB for host_id for host: %v\n", h)
+	log.Printf("Querying DB for host_id for hostname [%v]\n", h)
 
 	err := db.Ping()
 	if err != nil {
@@ -248,7 +248,7 @@ func GetHostIDFromDB(h string) (host_id string) {
 
 func GetLogTokenFromDB(h, l string) (token string) {
 
-	log.Printf("Checking DB for log: %v / %v\n", h, l)
+	log.Printf("Querying DB for log_token for log [%v] / hostname [%v]\n", l, h)
 
 	err := db.Ping()
 	if err != nil {
@@ -403,10 +403,27 @@ func main() {
 	listenAddrPtr = flag.String("listen", "0.0.0.0:1987", "Host/port to listen for syslog messages <host:port> (Default: 0.0.0.0:1987)")
 	groupCachePeers := flag.String("peers", "", "groupcache peers <host:port> (Default: none)")
 	groupCacheListenAddr := flag.String("cachelisten", "0.0.0.0:11000", "Interface to listen on for  <host:port> (Default: 0.0.0.0:11000)")
+	dbPassPtr := flag.String("dbpass", "", "Database password")
+	dbUserPtr := flag.String("dbuser", "lerelay", "Database user (Default: lerelay)")
+	dbNamePtr := flag.String("dbname", "lerelay", "Database name (Default: lerelay)")
+	dbHostPtr := flag.String("dbhost", "", "Database <host:port>")
 
 	flag.Parse()
+
 	if *logentriesAPIKeyPtr == "" {
 		log.Fatal("Must pass a Logentries API key. Use -h for help.")
+	}
+
+	if *dbPassPtr == "" {
+		log.Fatal("Must pass a database password.  Use -h for help")
+	}
+
+	if *dbHostPtr == "" {
+		log.Fatal("Must pass a database host.  Use -h for help")
+	}
+
+	if !strings.Contains(*dbHostPtr, ":") {
+		*dbHostPtr = fmt.Sprint(*dbHostPtr, ":3306")
 	}
 
 	// Set up groupcache peers
@@ -435,34 +452,72 @@ func main() {
 	peers := groupcache.NewHTTPPool(me)
 	peers.Set(peerSlice...)
 
-	hostTokenCache = groupcache.NewGroup("HostTokenCache", 64<<10, groupcache.GetterFunc(
+	hostTokenCache = groupcache.NewGroup("HostTokenCache", 64<<8, groupcache.GetterFunc(
 		func(ctx1 groupcache.Context, hostname string, dest groupcache.Sink) error {
-			fmt.Printf("asking for %v from DB\n", hostname)
-			result := GetHostTokenFromDB(hostname)
-			dest.SetString(result)
+			log.Printf("Cache miss for host_token for hostname [%v]\n", hostname)
+			host_token := GetHostTokenFromDB(hostname)
+			if host_token == "" {
+				// GetHostTokenFromDB() failed; host was not found in DB, so
+				// we need to create a new host token for it and save it to DB
+				host_token = RegisterNewHost(hostname)
+				if host_token == "" {
+					// Registration failed.  This is bad.
+					log.Fatalf("RegisterNewHost() failed for %v\n", hostname)
+				} else {
+					_ = SaveHostTokenToDB(hostname, host_token)
+				}
+			}
+			dest.SetString(host_token)
 			return nil
 		}))
 
-	logTokenCache = groupcache.NewGroup("LogTokenCache", 64<<10, groupcache.GetterFunc(
+	logTokenCache = groupcache.NewGroup("LogTokenCache", 64<<8, groupcache.GetterFunc(
 		func(ctx2 groupcache.Context, hostAndLog string, dest groupcache.Sink) error {
 			s := strings.Split(hostAndLog, "::")
 			hostname, logname := s[0], s[1]
-			fmt.Printf("asking for %v, %v from DB\n", hostname, logname)
-			result := GetLogTokenFromDB(hostname, logname)
-			dest.SetString(result)
+			log.Printf("Cache miss for log token for log [%v], host [%v]\n", logname, hostname)
+			log_token := GetLogTokenFromDB(hostname, logname)
+			if log_token == "" {
+				// Log token wasn't found so we register a new one
+				// but first, we need the host token
+				host_token := GetHostTokenFromDB(hostname)
+				if host_token == "" {
+					// If we've gotten this far, the host should already be registered.
+					// If it's not, panic.
+					log.Fatalf("GetHostTokenFromDB() failed for hostname [%v]\n", hostname)
+				}
+				// Register this log
+				log_token = RegisterNewLog(host_token, logname)
+				if log_token == "" {
+					// Registration failed
+					log.Fatalf("RegisterNewLog() failed for host_token [%v], logname [%v]\n", host_token, logname)
+				} else {
+					log.Printf("Registered new log token [%v] for log [%v] / host_token [%v]\n", log_token, logname, host_token)
+					// To save our log token, we need to fetch the host_id for it's parent host
+					host_id := GetHostIDFromDB(hostname)
+					if host_id == "" {
+						// GetHostIDFromDB() shouldn't fail here but if it does, that's bad
+						log.Fatalf("GetHostIDFromDB() failed for %v\n", hostname)
+					}
+					log.Printf("Saving log token [%v] for log [%v] / host_id [%v] to DB\n", log_token, logname, host_id)
+					SaveLogTokenToDB(host_id, logname, log_token)
+				}
+			}
+			dest.SetString(log_token)
 			return nil
 		}))
 
-	hostIDCache = groupcache.NewGroup("HostIDCache", 64<<10, groupcache.GetterFunc(
+	hostIDCache = groupcache.NewGroup("HostIDCache", 64<<8, groupcache.GetterFunc(
 		func(ctx3 groupcache.Context, hostname string, dest groupcache.Sink) error {
-			fmt.Printf("asking for %v from DB\n", hostname)
+			log.Printf("Cache miss for host_id for hostname [%v]\n", hostname)
 			result := GetHostIDFromDB(hostname)
 			dest.SetString(string(result))
 			return nil
 		}))
 
 	// Connect to the database
-	db, err = sql.Open("mysql", "lerelay:UYsesKv(cjL7M4NUr}@tcp(f83ab18e40896fc40e90ce4e6b4a576f00544ea7.rackspaceclouddb.com:3306)/lerelay")
+	dbd := *dbUserPtr + ":" + *dbPassPtr + "@tcp(" + *dbHostPtr + ")/" + *dbNamePtr
+	db, err = sql.Open("mysql", dbd)
 	if err != nil {
 		log.Fatal(err)
 	}
