@@ -1,8 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"encoding/gob"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +17,8 @@ import (
 	"time"
 
 	"github.com/chrissnell/syslog"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/golang/groupcache"
 )
 
 type handler struct {
@@ -68,15 +69,41 @@ type LogLine struct {
 }
 
 var (
+	db                    *sql.DB
+	hostTokenCache        *groupcache.Group
+	logTokenCache         *groupcache.Group
+	hostIDCache           *groupcache.Group
+	ctx1, ctx2, ctx3      groupcache.Context
 	logconsumerPtr        *string
 	logentriesAPIKeyPtr   *string
 	listenAddrPtr         *string
 	logentities           = make(map[string]LogentriesLogEntity)
 	hostentities          = make(map[string]LogentriesHostEntity)
 	tokenchan             = make(chan string)
+	dbConnectDone         = make(chan sql.DB)
 	logentities_filename  = "logentries-logentities.gob"
 	hostentities_filename = "logentries-hostentities.gob"
 )
+
+var hostTableSchema = `
+CREATE TABLE IF NOT EXISTS host (
+  id int NOT NULL AUTO_INCREMENT,
+  hostname varchar(60) NOT NULL,
+  host_key varchar(36) NOT NULL,
+  PRIMARY KEY (id)
+);
+`
+
+var logTableSchema = `
+CREATE TABLE IF NOT EXISTS log (
+  id int NOT NULL AUTO_INCREMENT,
+  host_id int NOT NULL,
+  logname varchar(80) NOT NULL,
+  token varchar(36) NOT NULL,
+  KEY host_ind (host_id),
+  PRIMARY KEY (id),
+  CONSTRAINT log_ibfk_1 FOREIGN KEY (host_id) REFERENCES host (id) ON DELETE CASCADE
+);`
 
 func newHandler() *handler {
 	msg := make(chan syslog.Message, 100)
@@ -137,41 +164,154 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 			fmt.Println("msg channel closed")
 		} else {
 
-			var hostentity LogentriesHostEntity
-			var logentity LogentriesLogEntity
+			var host_token, host_id, log_token string
 
-			l := strings.Join([]string{lht.host, lht.log}, "::")
-
-			hostentity = hostentities[lht.host]
-			if hostentity.Host.Key == "" {
-				log.Printf("Registering host entity: %v\n", lht.host)
-				hostentity = RegisterNewHost(lht.host)
-
-				// Store our new host token in our map and sync it to disk
-				hostentities[lht.host] = hostentity
-				err := SyncHostEntitiesToDisk()
-				if err != nil {
-					log.Fatal(err)
-				}
+			err := hostTokenCache.Get(ctx1, lht.host, groupcache.StringSink(&host_token))
+			if err != nil {
+				log.Fatal(err)
 			}
 
-			logentity = logentities[l]
-			if logentity.Log.Token == "" {
+			err = hostIDCache.Get(ctx3, lht.host, groupcache.StringSink(&host_id))
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if host_token == "" {
+				log.Printf("Registering host entity: %v\n", lht.host)
+				host_token = RegisterNewHost(lht.host)
+
+				host_id = SaveHostTokenToDB(lht.host, host_token)
+			}
+
+			// log_token := GetLogTokenFromDB(lht.host, lht.log)
+			hostandlog := lht.host + "::" + lht.log
+			err = logTokenCache.Get(ctx3, hostandlog, groupcache.StringSink(&log_token))
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if log_token == "" {
 				log.Printf("Registering new log entity [%v]: %v\n", lht.host, lht.log)
-				logentity := RegisterNewLog(hostentity, lht.log)
-				logentities[l] = logentity
-				tokenchan <- logentity.Log.Token
+				log_token := RegisterNewLog(host_token, lht.log)
+
+				log.Printf("Saving log token to db.  host_id: %v   logname: %v  log_token: %v\n", host_id, lht.log, log_token)
+				SaveLogTokenToDB(host_id, lht.log, log_token)
+
+				tokenchan <- log_token
 				tokenfetchdone <- true
-				err := SyncLogEntitiesToDisk()
-				if err != nil {
-					log.Fatal(err)
-				}
 			} else {
-				tokenchan <- logentity.Log.Token
+				tokenchan <- log_token
 				tokenfetchdone <- true
 			}
 		}
 	}
+}
+
+func GetHostTokenFromDB(h string) (token string) {
+
+	log.Printf("Querying DB for host_token for hostname [%v]\n", h)
+
+	err := db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = db.QueryRow("SELECT token FROM host WHERE hostname = ?", h).Scan(&token)
+
+	if err == sql.ErrNoRows {
+		log.Print("Host does not exist in DB")
+		return token
+	}
+
+	return token
+}
+
+func GetHostIDFromDB(h string) (host_id string) {
+
+	log.Printf("Querying DB for host_id for hostname [%v]\n", h)
+
+	err := db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = db.QueryRow("SELECT id FROM host WHERE hostname = ?", h).Scan(&host_id)
+
+	if err == sql.ErrNoRows {
+		log.Print("Host does not exist in DB")
+		return host_id
+	}
+
+	return host_id
+
+}
+
+func GetLogTokenFromDB(h, l string) (token string) {
+
+	log.Printf("Querying DB for log_token for log [%v] / hostname [%v]\n", l, h)
+
+	err := db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = db.QueryRow("SELECT log.token AS token FROM log INNER JOIN host ON log.host_id=host.id WHERE log.logname = ? AND host.hostname = ?", l, h).Scan(&token)
+
+	if err == sql.ErrNoRows {
+		return token
+	}
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return (token)
+}
+
+func SaveHostTokenToDB(hostname string, token string) (host_id string) {
+
+	err := db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	stmt, err := db.Prepare("INSERT INTO host (hostname, token) VALUES(?, ?)")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	res, err := stmt.Exec(hostname, token)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	host_id_int, _ := res.LastInsertId()
+	host_id = string(host_id_int)
+	rowCnt, _ := res.RowsAffected()
+	log.Printf("INSERT INTO host sucessful.  Rows affected: %v", rowCnt)
+	return host_id
+}
+
+func SaveLogTokenToDB(host_id, logname, token string) {
+
+	err := db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	stmt, err := db.Prepare("INSERT INTO log (host_id, logname, token) VALUES(?, ?, ?)")
+	if err != nil {
+		log.Fatalf("Error saving log token to DB: %v", err)
+	}
+
+	res, err := stmt.Exec(host_id, logname, token)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	rowCnt, _ := res.RowsAffected()
+	log.Printf("INSERT INTO log sucessful.  Rows affected: %v", rowCnt)
+
 }
 
 func DialLogEntries() (conn net.Conn, err error) {
@@ -214,45 +354,9 @@ func SendLogMessages(msg chan LogLine) {
 	}
 }
 
-func SyncLogEntitiesToDisk() (err error) {
-	m := new(bytes.Buffer)
-	enc := gob.NewEncoder(m)
-	enc.Encode(logentities)
-	err = ioutil.WriteFile("logentries-logentities.gob", m.Bytes(), 0600)
-	return (err)
-}
+func RegisterNewHost(h string) (host_token string) {
+	var he LogentriesHostEntity
 
-func SyncHostEntitiesToDisk() (err error) {
-	m := new(bytes.Buffer)
-	enc := gob.NewEncoder(m)
-	enc.Encode(hostentities)
-	err = ioutil.WriteFile("logentries-hostentities.gob", m.Bytes(), 0600)
-	return (err)
-}
-
-func LoadLogEntitiesFromDisk() (err error) {
-	n, err := ioutil.ReadFile("logentries-logentities.gob")
-	if err != nil {
-		return (err)
-	}
-	p := bytes.NewBuffer(n)
-	dec := gob.NewDecoder(p)
-	err = dec.Decode(&logentities)
-	return (err)
-}
-
-func LoadHostEntitiesFromDisk() (err error) {
-	n, err := ioutil.ReadFile("logentries-hostentities.gob")
-	if err != nil {
-		return (err)
-	}
-	p := bytes.NewBuffer(n)
-	dec := gob.NewDecoder(p)
-	err = dec.Decode(&hostentities)
-	return (err)
-}
-
-func RegisterNewHost(h string) (he LogentriesHostEntity) {
 	v := url.Values{}
 	v.Set("request", "register")
 	v.Set("user_key", *logentriesAPIKeyPtr)
@@ -267,14 +371,16 @@ func RegisterNewHost(h string) (he LogentriesHostEntity) {
 	}
 	body, err := ioutil.ReadAll(res.Body)
 	err = json.Unmarshal(body, &he)
-	return (he)
+	return (he.Host_key)
 }
 
-func RegisterNewLog(e LogentriesHostEntity, n string) (logentity LogentriesLogEntity) {
+func RegisterNewLog(ht, n string) (log_token string) {
+	var logentity LogentriesLogEntity
+
 	v := url.Values{}
 	v.Set("request", "new_log")
 	v.Set("user_key", *logentriesAPIKeyPtr)
-	v.Set("host_key", e.Host.Key)
+	v.Set("host_key", ht)
 	v.Set("name", n)
 	v.Set("filename", "")
 	v.Set("retention", "-1")
@@ -285,14 +391,22 @@ func RegisterNewLog(e LogentriesHostEntity, n string) (logentity LogentriesLogEn
 	}
 	body, err := ioutil.ReadAll(res.Body)
 	err = json.Unmarshal(body, &logentity)
-	return (logentity)
+	log_token = logentity.Log_key
+	return (log_token)
 }
 
 func main() {
+	var err error
 
 	logconsumerPtr = flag.String("consumer", "api.logentries.com:10000", "Logentries log consumer endpoint <host:port> (Default: api.logentries.com:10000)")
 	logentriesAPIKeyPtr = flag.String("apikey", "", "Logentries API key")
 	listenAddrPtr = flag.String("listen", "0.0.0.0:1987", "Host/port to listen for syslog messages <host:port> (Default: 0.0.0.0:1987)")
+	groupCachePeers := flag.String("peers", "", "groupcache peers <host:port> (Default: none)")
+	groupCacheListenAddr := flag.String("cachelisten", "0.0.0.0:11000", "Interface to listen on for  <host:port> (Default: 0.0.0.0:11000)")
+	dbPassPtr := flag.String("dbpass", "", "Database password")
+	dbUserPtr := flag.String("dbuser", "lerelay", "Database user (Default: lerelay)")
+	dbNamePtr := flag.String("dbname", "lerelay", "Database name (Default: lerelay)")
+	dbHostPtr := flag.String("dbhost", "", "Database <host:port>")
 
 	flag.Parse()
 
@@ -300,18 +414,133 @@ func main() {
 		log.Fatal("Must pass a Logentries API key. Use -h for help.")
 	}
 
-	if _, err := os.Stat(logentities_filename); err == nil {
-		err = LoadLogEntitiesFromDisk()
-		if err != nil {
-			log.Fatal(err)
+	if *dbPassPtr == "" {
+		log.Fatal("Must pass a database password.  Use -h for help")
+	}
+
+	if *dbHostPtr == "" {
+		log.Fatal("Must pass a database host.  Use -h for help")
+	}
+
+	if !strings.Contains(*dbHostPtr, ":") {
+		*dbHostPtr = fmt.Sprint(*dbHostPtr, ":3306")
+	}
+
+	// Set up groupcache peers
+	peerSlice := make([]string, 1)
+
+	if strings.Contains(*groupCachePeers, ",") {
+		peerSlice = strings.Split(*groupCachePeers, ",")
+	} else if *groupCachePeers != "" {
+		peerSlice[0] = *groupCachePeers
+	}
+
+	if len(peerSlice) > 0 {
+		for peer, value := range peerSlice {
+			peerSlice[peer] = "http://" + value
 		}
 	}
 
-	if _, err := os.Stat(hostentities_filename); err == nil {
-		err = LoadHostEntitiesFromDisk()
-		if err != nil {
-			log.Fatal(err)
-		}
+	me := "http://" + *groupCacheListenAddr
+
+	peerSlice = append(peerSlice, me)
+
+	for peer, value := range peerSlice {
+		log.Printf("Peer: %v  Value: %v\n", peer, value)
+	}
+
+	peers := groupcache.NewHTTPPool(me)
+	peers.Set(peerSlice...)
+
+	hostTokenCache = groupcache.NewGroup("HostTokenCache", 64<<8, groupcache.GetterFunc(
+		func(ctx1 groupcache.Context, hostname string, dest groupcache.Sink) error {
+			log.Printf("Cache miss for host_token for hostname [%v]\n", hostname)
+			host_token := GetHostTokenFromDB(hostname)
+			if host_token == "" {
+				// GetHostTokenFromDB() failed; host was not found in DB, so
+				// we need to create a new host token for it and save it to DB
+				host_token = RegisterNewHost(hostname)
+				if host_token == "" {
+					// Registration failed.  This is bad.
+					log.Fatalf("RegisterNewHost() failed for %v\n", hostname)
+				} else {
+					_ = SaveHostTokenToDB(hostname, host_token)
+				}
+			}
+			dest.SetString(host_token)
+			return nil
+		}))
+
+	logTokenCache = groupcache.NewGroup("LogTokenCache", 64<<8, groupcache.GetterFunc(
+		func(ctx2 groupcache.Context, hostAndLog string, dest groupcache.Sink) error {
+			s := strings.Split(hostAndLog, "::")
+			hostname, logname := s[0], s[1]
+			log.Printf("Cache miss for log token for log [%v], host [%v]\n", logname, hostname)
+			log_token := GetLogTokenFromDB(hostname, logname)
+			if log_token == "" {
+				// Log token wasn't found so we register a new one
+				// but first, we need the host token
+				host_token := GetHostTokenFromDB(hostname)
+				if host_token == "" {
+					// If we've gotten this far, the host should already be registered.
+					// If it's not, panic.
+					log.Fatalf("GetHostTokenFromDB() failed for hostname [%v]\n", hostname)
+				}
+				// Register this log
+				log_token = RegisterNewLog(host_token, logname)
+				if log_token == "" {
+					// Registration failed
+					log.Fatalf("RegisterNewLog() failed for host_token [%v], logname [%v]\n", host_token, logname)
+				} else {
+					log.Printf("Registered new log token [%v] for log [%v] / host_token [%v]\n", log_token, logname, host_token)
+					// To save our log token, we need to fetch the host_id for it's parent host
+					host_id := GetHostIDFromDB(hostname)
+					if host_id == "" {
+						// GetHostIDFromDB() shouldn't fail here but if it does, that's bad
+						log.Fatalf("GetHostIDFromDB() failed for %v\n", hostname)
+					}
+					log.Printf("Saving log token [%v] for log [%v] / host_id [%v] to DB\n", log_token, logname, host_id)
+					SaveLogTokenToDB(host_id, logname, log_token)
+				}
+			}
+			dest.SetString(log_token)
+			return nil
+		}))
+
+	hostIDCache = groupcache.NewGroup("HostIDCache", 64<<8, groupcache.GetterFunc(
+		func(ctx3 groupcache.Context, hostname string, dest groupcache.Sink) error {
+			log.Printf("Cache miss for host_id for hostname [%v]\n", hostname)
+			result := GetHostIDFromDB(hostname)
+			dest.SetString(string(result))
+			return nil
+		}))
+
+	// Connect to the database
+	dbd := *dbUserPtr + ":" + *dbPassPtr + "@tcp(" + *dbHostPtr + ")/" + *dbNamePtr
+	db, err = sql.Open("mysql", dbd)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create database schema if it doesn't exist already
+	create, err := db.Prepare(hostTableSchema)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = create.Exec()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	create, err = db.Prepare(logTableSchema)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = create.Exec()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	// Create a server with one handler and run one listen gorutine
@@ -329,4 +558,5 @@ func main() {
 	fmt.Println("Shutdown the server...")
 	s.Shutdown()
 	fmt.Println("Server is down")
+
 }
