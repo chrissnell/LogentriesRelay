@@ -11,6 +11,8 @@ Then:
 git clone git@github.com:chrissnell/LogentriesRelay.git
 cd LogentriesRelay
 go get github.com/chrissnell/syslog
+go get github.com/go-sql-driver/mysql
+go get github.com/golang/groupcache
 go build LogentriesRelay.go
 cp LogentriesRelay <wherever you want it>
 ```
