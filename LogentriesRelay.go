@@ -371,7 +371,7 @@ func RegisterNewHost(h string) (host_token string) {
 	}
 	body, err := ioutil.ReadAll(res.Body)
 	err = json.Unmarshal(body, &he)
-	return (he.Host_key)
+	return (he.Host.Key)
 }
 
 func RegisterNewLog(ht, n string) (log_token string) {
@@ -391,14 +391,14 @@ func RegisterNewLog(ht, n string) (log_token string) {
 	}
 	body, err := ioutil.ReadAll(res.Body)
 	err = json.Unmarshal(body, &logentity)
-	log_token = logentity.Log_key
+	log_token = logentity.Log.Token
 	return (log_token)
 }
 
 func main() {
 	var err error
 
-	logconsumerPtr = flag.String("consumer", "api.logentries.com:10000", "Logentries log consumer endpoint <host:port> (Default: api.logentries.com:10000)")
+	logconsumerPtr = flag.String("consumer", "data.logentries.com:10000", "Logentries log consumer endpoint <host:port> (Default: data.logentries.com:10000)")
 	logentriesAPIKeyPtr = flag.String("apikey", "", "Logentries API key")
 	listenAddrPtr = flag.String("listen", "0.0.0.0:1987", "Host/port to listen for syslog messages <host:port> (Default: 0.0.0.0:1987)")
 	groupCachePeers := flag.String("peers", "", "groupcache peers <host:port> (Default: none)")
