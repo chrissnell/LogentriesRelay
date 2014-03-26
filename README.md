@@ -4,9 +4,11 @@ LogentriesRelay is an intelligent syslog relay for Logentries.com that handles a
 
 Installation
 ------------
-Install Go: http://golang.org/doc/install.
+1. Install Go: http://golang.org/doc/install.
 
-Then:
+2. Create a MySQL database to hold the Logentries tokens.  You don't need to create any tables; the relay will take care of that for you.   Just make note of the DB server hostname, DB username, and DB password for when you fire up the relay.
+
+3. Then:
 ```
 git clone git@github.com:chrissnell/LogentriesRelay.git
 cd LogentriesRelay
