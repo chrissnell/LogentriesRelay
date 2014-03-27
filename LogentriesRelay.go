@@ -398,6 +398,8 @@ func RegisterNewLog(ht, n string) (log_token string) {
 func main() {
 	var err error
 
+	log.Print("-------------------- LogentriesRelay Starting --------------------\n")
+
 	logconsumerPtr = flag.String("consumer", "data.logentries.com:10000", "Logentries log consumer endpoint <host:port> (Default: data.logentries.com:10000)")
 	logentriesAPIKeyPtr = flag.String("apikey", "", "Logentries API key")
 	listenAddrPtr = flag.String("listen", "0.0.0.0:1987", "Host/port to listen for syslog messages <host:port> (Default: 0.0.0.0:1987)")
