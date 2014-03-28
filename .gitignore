@@ -1,9 +1,10 @@
+.gitignore
 
 LogentriesRelay
 
 LogentriesRelay-darwin-amd64
 
-LogentriesRelay-linux-amd64.gz
+LogentriesRelay-linux-amd64
 
 db.txt
 
