@@ -69,6 +69,9 @@ type LogLine struct {
 }
 
 var (
+	host_token            string
+	host_id               string
+	log_token             string
 	db                    *sql.DB
 	hostTokenCache        *groupcache.Group
 	logTokenCache         *groupcache.Group
@@ -89,7 +92,7 @@ var hostTableSchema = `
 CREATE TABLE IF NOT EXISTS host (
   id int NOT NULL AUTO_INCREMENT,
   hostname varchar(60) NOT NULL,
-  host_key varchar(36) NOT NULL,
+  token varchar(36) NOT NULL,
   PRIMARY KEY (id)
 );
 `
@@ -164,33 +167,15 @@ func GetTokenForLog(tokenfetchdone chan bool, lh chan struct{ host, log string }
 			fmt.Println("msg channel closed")
 		} else {
 
-			var host_token, host_id, log_token string
-
-			err := hostTokenCache.Get(ctx1, lht.host, groupcache.StringSink(&host_token))
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			err = hostIDCache.Get(ctx3, lht.host, groupcache.StringSink(&host_id))
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			if host_token == "" {
-				log.Printf("Registering host entity: %v\n", lht.host)
-				host_token = RegisterNewHost(lht.host)
-
-				host_id = SaveHostTokenToDB(lht.host, host_token)
-			}
-
 			// log_token := GetLogTokenFromDB(lht.host, lht.log)
 			hostandlog := lht.host + "::" + lht.log
-			err = logTokenCache.Get(ctx3, hostandlog, groupcache.StringSink(&log_token))
+			err := logTokenCache.Get(ctx3, hostandlog, groupcache.StringSink(&log_token))
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			if log_token == "" {
+
 				log.Printf("Registering new log entity [%v]: %v\n", lht.host, lht.log)
 				log_token := RegisterNewLog(host_token, lht.log)
 
@@ -475,19 +460,37 @@ func main() {
 
 	logTokenCache = groupcache.NewGroup("LogTokenCache", 64<<8, groupcache.GetterFunc(
 		func(ctx2 groupcache.Context, hostAndLog string, dest groupcache.Sink) error {
+
 			s := strings.Split(hostAndLog, "::")
 			hostname, logname := s[0], s[1]
+
 			log.Printf("Cache miss for log token for log [%v], host [%v]\n", logname, hostname)
 			log_token := GetLogTokenFromDB(hostname, logname)
+
 			if log_token == "" {
 				// Log token wasn't found so we register a new one
 				// but first, we need the host token
-				host_token := GetHostTokenFromDB(hostname)
-				if host_token == "" {
-					// If we've gotten this far, the host should already be registered.
-					// If it's not, panic.
-					log.Fatalf("GetHostTokenFromDB() failed for hostname [%v]\n", hostname)
+
+				// Get host token from cache and retrieve from DB and/or register new host if needed
+				err = hostTokenCache.Get(ctx1, hostname, groupcache.StringSink(&host_token))
+				if err != nil {
+					log.Fatal(err)
 				}
+
+				if host_token == "" {
+					log.Printf("Host token fetch and registration failed for %v.  This is bad.\n", hostname)
+				}
+
+				// Get the host.id from cache/DB because we'll need it to save log token to DB
+				err = hostIDCache.Get(ctx3, hostname, groupcache.StringSink(&host_id))
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				if host_id == "" {
+					log.Printf("Host ID fetch failed for hostname %v.  This is bad.\n", hostname)
+				}
+
 				// Register this log
 				log_token = RegisterNewLog(host_token, logname)
 				if log_token == "" {
@@ -525,6 +528,7 @@ func main() {
 	}
 
 	// Create database schema if it doesn't exist already
+	log.Print("Creating host table schema in DB if it doesn't already exist...\n")
 	create, err := db.Prepare(hostTableSchema)
 	if err != nil {
 		log.Fatal(err)
@@ -535,6 +539,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	log.Print("Creating log table schema in DB if it doesn't already exist...\n")
 	create, err = db.Prepare(logTableSchema)
 	if err != nil {
 		log.Fatal(err)
